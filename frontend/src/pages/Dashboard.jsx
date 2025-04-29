@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import useDebounce from '../hooks/useDebounced';
+import { SketchPicker } from 'react-color';
 
 const Dashboard = () => {
   const [userData, setUserData] = useState(null);
@@ -10,14 +12,21 @@ const Dashboard = () => {
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const [fileLoaded, setFileLoaded] = useState(false);
   
+  // Right Click States 
+  const [showStyleEditor, setShowStyleEditor] = useState(false);
+  const [editableStyles, setEditableStyles] = useState({});
+  const [selectedElement, setSelectedElement] = useState(null);
+  const debouncedHtmlContent = useDebounce(htmlContent, 300);
+
   const textareaRef = useRef(null);
   const previewRef = useRef(null);
   const navigate = useNavigate();
   const idPrefix = "darwin-id-";
+  const savedScrollTop = useRef(0);
 
   // Tags that need unique IDs for selection
   const tagsNeedingId = [
-    'div', 'span', 'p', 'a', 'button', 'input', 'label',
+    'div', 'span', 'p', 'a', 'button', 'input', 'label', 'text',
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
     'ul', 'ol', 'li', 'table', 'tr', 'td', 'th',
     'section', 'article', 'nav', 'aside', 'main',
@@ -98,9 +107,41 @@ const Dashboard = () => {
 
   // Update HTML content when editing
   const handleHtmlChange = (e) => {
+    const iframeDoc = previewRef.current?.contentDocument;
+    if (iframeDoc) {
+      savedScrollTop.current = iframeDoc.documentElement.scrollTop;
+      console.log("savedScrollTop on change (after layout): ", savedScrollTop.current);
+    }
     setHtmlContent(e.target.value);
   };
 
+  const scrollToCodeByElementId = (elementId) => {
+    if (!textareaRef.current) return;
+  
+    const tagRegex = new RegExp(`<[^>]*id="${elementId}"[^>]*>`, "i");
+    const match = htmlContent.match(tagRegex);
+  
+    if (match && match.index !== undefined) {
+      const startIdx = match.index;
+  
+      // Focus textarea and set selection
+      textareaRef.current.focus();
+      textareaRef.current.setSelectionRange(startIdx, startIdx + match[0].length);
+  
+      // Scroll to make it visible (align to center)
+      const beforeText = htmlContent.substring(0, startIdx);
+      const lineCountBefore = (beforeText.match(/\n/g) || []).length;
+  
+      const lineHeight = parseInt(getComputedStyle(textareaRef.current).lineHeight) || 20;
+      const scrollTop = Math.max((lineCountBefore - 5) * lineHeight, 0);
+      textareaRef.current.scrollTop = scrollTop;
+  
+      console.log(`Scrolled code to tag with ID: ${elementId}`);
+    } else {
+      console.warn(`Tag with id="${elementId}" not found in HTML content.`);
+    }
+  };
+  
   // Handle click on rendered HTML element to highlight corresponding code
   const handleRenderedClick = (e) => {
     e.stopPropagation();
@@ -183,24 +224,99 @@ const Dashboard = () => {
     
     // Focus and select the text in the textarea
     if (startIdx !== -1 && endIdx !== -1 && textareaRef.current) {
-      textareaRef.current.focus();
-      
-      // Scroll the textarea to bring the selection into view
-      // First calculate approximately where the text is in the textarea
-      const textBefore = rawText.substring(0, startIdx);
-      const lines = textBefore.split('\n').length;
-      const approximateLineHeight = 21; // Adjust based on your font size
-      
-      // Set selection
-      setTimeout(() => {
-        textareaRef.current.setSelectionRange(startIdx, endIdx);
-        
-        // Calculate scroll position (approximate)
-        const scrollPosition = (lines - 5) * approximateLineHeight; // 5 lines buffer
-        textareaRef.current.scrollTop = scrollPosition > 0 ? scrollPosition : 0;
-      }, 0);
+      textareaRef.current.focus()
+
+      scrollToCodeByElementId(id)
     }
   };
+  
+  const handleRightClick = (e) => {
+    e.preventDefault(); // stop default context menu
+  
+    let target = e.target;
+    
+    // Only target elements with our injected ID
+    if (!target.id || !target.id.startsWith(idPrefix)) return;
+  
+    const computed = window.getComputedStyle(target);
+    
+
+    // List all styles
+    // const stylesObj = {};
+    // for (let i = 0; i < computed.length; i++) {
+    //   const prop = computed[i];
+    //   stylesObj[prop] = computed.getPropertyValue(prop);
+    // }
+
+
+    // Selectively pick only needed styles
+    const stylesToShow = {
+      color: computed.color,
+      fontSize: computed.fontSize,
+      backgroundColor: computed.backgroundColor,
+      margin: computed.margin,
+      padding: computed.padding,
+      // add more if you want
+    };
+  
+    setSelectedElement(target);      // Save clicked element
+    setEditableStyles(stylesToShow); // Save its styles
+    setShowStyleEditor(true);         // Show dialog/modal
+  };
+  
+  const handleIframeLoad = () => {
+    if (!previewRef.current) return;
+    const iframeDocument = previewRef.current.contentDocument;
+    if (!iframeDocument) return;
+  
+    iframeDocument.addEventListener('click', handleRenderedClick);
+    iframeDocument.addEventListener('contextmenu', handleRightClick);
+
+      iframeDocument.documentElement.scrollTop = savedScrollTop.current;
+      console.log("Restored scrollTop to in iframe: ", savedScrollTop.current);
+
+  };
+  
+  const applyEditedStyles = () => {
+    if (selectedElement) {
+      Object.entries(editableStyles).forEach(([prop, value]) => {
+        selectedElement.style[prop] = value;
+      });
+  
+      // After applying styles, update htmlContent with the iframe's current content
+      const iframeDoc = previewRef.current?.contentDocument;
+      if (iframeDoc) {
+        savedScrollTop.current = iframeDoc.documentElement.scrollTop;
+        const updatedHtml = iframeDoc.documentElement.outerHTML;
+        setHtmlContent(updatedHtml);
+      }
+    }
+    setShowStyleEditor(false);
+  };
+  
+  // Handles live style changes 
+  const handleEditableStyleChange = (property, value) => {
+    setEditableStyles((prev) => ({
+      ...prev,
+      [property]: value,
+    }));
+  };
+  
+  // function ensureHex(color) {
+  //   if (color.startsWith("#")) return color;
+
+  //   const result = color.match(/\d+/g);
+  //   if (!result) return "#000000";
+  //   return (
+  //     "#" +
+  //     result
+  //       .map((x) => {
+  //         const hex = parseInt(x).toString(16);
+  //         return hex.length === 1 ? "0" + hex : hex;
+  //       })
+  //       .join("")
+  //   );
+  // }
 
   // Export clean HTML
   const handleExport = () => {
@@ -310,7 +426,7 @@ const Dashboard = () => {
                   ref={textareaRef}
                   value={htmlContent}
                   onChange={handleHtmlChange}
-                  className="w-full h-full p-4 bg-dark-950 text-gray-200 font-mono focus:outline-none resize-none code-editor"
+                  className="w-full h-full p-4 bg-dark-950 text-gray-200 font-mono focus:outline-none resize-none code-editor text-nowrap"
                   placeholder="HTML code will appear here after uploading a file..."
                   spellCheck="false"
                 />
@@ -351,13 +467,242 @@ const Dashboard = () => {
                 <iframe
                   ref={previewRef}
                   className="w-full h-full border-none"
-                  srcDoc={htmlContent}
+                  srcDoc={debouncedHtmlContent}
                   title="HTML Preview"
-                  sandbox="allow-same-origin"
-                  onClick={handleRenderedClick}
+                  // sandbox="allow-same-origin"
+                  sandbox="allow-scripts allow-same-origin"
+                  onLoad={handleIframeLoad}
                 />
               )}
             </div>
+
+            {/* Right Click Context Menu */}
+            {showStyleEditor && (
+              <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
+                <div className="bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-6 rounded-2xl shadow-2xl w-[400px] max-w-[90vw] animate-in zoom-in-95 duration-150">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-2xl font-bold">Style Editor</h2>
+                    <button 
+                      onClick={() => setShowStyleEditor(false)}
+                      className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
+                    {/* Typography Group */}
+                    <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                      <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">Typography</h3>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium block">Font Size</label>
+                          <select
+                            value={editableStyles.fontSize}
+                            onChange={(e) => handleEditableStyleChange('fontSize', e.target.value)}
+                            className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                          >
+                            <option value="12px">12px</option>
+                            <option value="14px">14px</option>
+                            <option value="16px">16px</option>
+                            <option value="18px">18px</option>
+                            <option value="20px">20px</option>
+                            <option value="24px">24px</option>
+                            <option value="32px">32px</option>
+                          </select>
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium block">Font Weight</label>
+                          <select
+                            value={editableStyles.fontWeight}
+                            onChange={(e) => handleEditableStyleChange('fontWeight', e.target.value)}
+                            className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                          >
+                            <option value="normal">Normal</option>
+                            <option value="bold">Bold</option>
+                            <option value="lighter">Lighter</option>
+                            <option value="bolder">Bolder</option>
+                            <option value="100">100</option>
+                            <option value="400">400</option>
+                            <option value="700">700</option>
+                            <option value="900">900</option>
+                          </select>
+                        </div>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium block">Text Align</label>
+                        <div className="flex bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg overflow-hidden">
+                          {['left', 'center', 'right', 'justify'].map((align) => (
+                            <button
+                              key={align}
+                              onClick={() => handleEditableStyleChange('textAlign', align)}
+                              className={`flex-1 py-2 px-3 text-sm capitalize transition-colors ${
+                                editableStyles.textAlign === align 
+                                  ? 'bg-blue-500 text-white' 
+                                  : 'hover:bg-gray-100 dark:hover:bg-gray-600'
+                              }`}
+                            >
+                              {align}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* Colors Group */}
+                    <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                      <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">Colors</h3>
+                      
+                      <div className="grid grid-cols-1 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium block">Text Color</label>
+                          <div className="flex items-center space-x-2">
+                            <div 
+                              className="w-8 h-8 rounded-md border border-gray-200 dark:border-gray-600" 
+                              style={{ backgroundColor: editableStyles.color }}
+                            ></div>
+                            {/* <input
+                              type="color"
+                              value={ensureHex(editableStyles.color)}
+                              onChange={(e) => handleEditableStyleChange('color', e.target.value)}
+                              className="w-full h-9 cursor-pointer rounded-md border border-gray-200 dark:border-gray-600"
+                            /> */}
+                            <SketchPicker
+                              color={editableStyles.color}
+                              onChange={(color) => handleEditableStyleChange('color', color.hex || `rgba(${color.rgb.r}, ${color.rgb.g}, ${color.rgb.b}, ${color.rgb.a})`)}
+                              
+                            />
+                          </div>
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium block">Background</label>
+                          <div className="flex items-center space-x-2">
+                            <div 
+                              className="w-8 h-8 rounded-md border border-gray-200 dark:border-gray-600" 
+                              style={{ backgroundColor: editableStyles.backgroundColor }}
+                            ></div>
+                            {/* <input
+                              type="color"
+                              value={ensureHex(editableStyles.backgroundColor)}
+                              onChange={(e) => handleEditableStyleChange('backgroundColor', e.target.value)}
+                              className="w-full h-9 cursor-pointer rounded-md border border-gray-200 dark:border-gray-600"
+                            /> */}
+                            <SketchPicker
+                              color={editableStyles.backgroundColor}
+                              onChange={(color) => handleEditableStyleChange('backgroundColor', color.hex || `rgba(${color.rgb.r}, ${color.rgb.g}, ${color.rgb.b}, ${color.rgb.a})`)}
+                              
+                            />
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium block">Opacity</label>
+                        <div className="flex items-center space-x-3">
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.1"
+                            value={editableStyles.opacity}
+                            onChange={(e) => handleEditableStyleChange('opacity', e.target.value)}
+                            className="w-full h-2 bg-gray-200 dark:bg-gray-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                          />
+                          <span className="text-sm w-8 text-center">{editableStyles.opacity}</span>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* Spacing & Layout Group */}
+                    <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
+                      <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">Spacing & Layout</h3>
+                      
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium block">Margin</label>
+                          <select
+                            value={editableStyles.margin}
+                            onChange={(e) => handleEditableStyleChange('margin', e.target.value)}
+                            className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                          >
+                            <option value="0px">0px</option>
+                            <option value="4px">4px</option>
+                            <option value="8px">8px</option>
+                            <option value="12px">12px</option>
+                            <option value="16px">16px</option>
+                            <option value="24px">24px</option>
+                            <option value="32px">32px</option>
+                          </select>
+                        </div>
+                        
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium block">Padding</label>
+                          <select
+                            value={editableStyles.padding}
+                            onChange={(e) => handleEditableStyleChange('padding', e.target.value)}
+                            className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                          >
+                            <option value="0px">0px</option>
+                            <option value="4px">4px</option>
+                            <option value="8px">8px</option>
+                            <option value="12px">12px</option>
+                            <option value="16px">16px</option>
+                            <option value="24px">24px</option>
+                            <option value="32px">32px</option>
+                          </select>
+                        </div>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium block">Border Radius</label>
+                        <input
+                          type="text"
+                          value={editableStyles.borderRadius}
+                          onChange={(e) => handleEditableStyleChange('borderRadius', e.target.value)}
+                          className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                        />
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium block">Box Shadow</label>
+                        <select
+                          value={editableStyles.boxShadow}
+                          onChange={(e) => handleEditableStyleChange('boxShadow', e.target.value)}
+                          className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                        >
+                          <option value="none">None</option>
+                          <option value="0 1px 3px rgba(0,0,0,0.1)">Small</option>
+                          <option value="0 4px 6px rgba(0,0,0,0.1)">Medium</option>
+                          <option value="0 10px 15px rgba(0,0,0,0.1)">Large</option>
+                          <option value="0 20px 25px rgba(0,0,0,0.1)">Extra Large</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end space-x-3 mt-6">
+                    <button
+                      onClick={() => setShowStyleEditor(false)}
+                      className="px-5 py-2.5 rounded-lg font-medium border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={applyEditedStyles}
+                      className="px-5 py-2.5 rounded-lg font-medium bg-blue-500 hover:bg-blue-600 text-white transition-colors"
+                    >
+                      Apply Changes
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
