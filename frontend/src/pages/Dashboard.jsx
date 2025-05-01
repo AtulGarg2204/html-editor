@@ -1,8 +1,10 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import useDebounce from '../hooks/useDebounced';
-import { SketchPicker } from 'react-color';
+
+import { marked } from 'marked';
+import RightClickMenu from '../components/RightClickMenu';
 
 const Dashboard = () => {
   const [userData, setUserData] = useState(null);
@@ -11,13 +13,21 @@ const Dashboard = () => {
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(false);
   const [fileLoaded, setFileLoaded] = useState(false);
+  const [fileType, setFileType] = useState(null); // 'html' or 'markdown'
+  const [markdownContent, setMarkdownContent] = useState("");
   
+  const markdownTextareaRef = useRef(null); // Ref for Markdown editor
+  const markdownPreviewRef = useRef(null); // Ref for Markdown preview iframe
+  const isSyncingScroll = useRef(false); // Flag to prevent scroll loops
+  const syncTimeoutRef = useRef(null); // Ref for timeout management
+  const restoreScrollPending = useRef(false);
+
   // Right Click States 
   const [showStyleEditor, setShowStyleEditor] = useState(false);
   const [editableStyles, setEditableStyles] = useState({});
   const [selectedElement, setSelectedElement] = useState(null);
-  const debouncedHtmlContent = useDebounce(htmlContent, 300);
-
+  const debouncedHtmlContent = useDebounce(htmlContent, 50);
+  const debouncedMarkdownContent = useDebounce(markdownContent,200);
   const textareaRef = useRef(null);
   const previewRef = useRef(null);
   const navigate = useNavigate();
@@ -26,12 +36,14 @@ const Dashboard = () => {
 
   // Tags that need unique IDs for selection
   const tagsNeedingId = [
-    'div', 'span', 'p', 'a', 'button', 'input', 'label', 'text',
+    'div', 'span', 'p', 'a', 'button', 'input', 'label', 'text', 'rect', 'line',
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
     'ul', 'ol', 'li', 'table', 'tr', 'td', 'th',
     'section', 'article', 'nav', 'aside', 'main',
     'header', 'footer', 'form', 'img', 'figure', 'figcaption'
   ];
+
+  // #region General Functions
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -70,6 +82,69 @@ const Dashboard = () => {
     navigate('/login');
   };
 
+   // Handle file upload
+   const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+  
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target.result;
+  
+      if (file.name.endsWith(".html")) {
+        const injectedHtml = injectDummyIds(content);
+        setHtmlContent(injectedHtml);
+        setFileType("html"); // new state
+      } else if (file.name.endsWith(".md")) {
+        setMarkdownContent(content);
+        setFileType("markdown");
+      } else {
+        alert("Unsupported file type. Please upload an .html or .md file.");
+      }
+    };
+    reader.readAsText(file);
+    setFileLoaded(true)
+  };
+
+  // Export clean HTML Or Markdown
+  const handleExport = () => {
+    if(fileType === "html"){
+      const cleanedHtml = removeDummyIds(htmlContent);
+      
+      // Create file for download
+      const blob = new Blob([cleanedHtml], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'darwin-export.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+    if(fileType === "markdown"){
+      const blob = new Blob([markdownContent], { type: 'text/markdown'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'darwin-export.md';
+      document.body.appendChild(a);
+      a.click()
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      console.log("Exporting fileType:", fileType);
+    }
+  };
+
+  // #endregion
+
+
+
+
+
+  // #region HTML
+
+  // Function Related to HTML Files
   // Inject unique IDs into HTML elements for selection
   const injectDummyIds = (html) => {
     let idCounter = 1;
@@ -84,65 +159,110 @@ const Dashboard = () => {
     return html.replace(new RegExp(`\\s+id="${idPrefix}\\d+"`, 'g'), '');
   };
 
-  // Handle file upload
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (file && file.type === "text/html") {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        try {
-          const injectedHtml = injectDummyIds(event.target.result);
-          setHtmlContent(injectedHtml);
-          setFileLoaded(true);
-        } catch (error) {
-          console.error("Error processing HTML file:", error);
-          alert("Error processing the HTML file. Please try another file.");
-        }
-      };
-      reader.readAsText(file);
-    } else {
-      alert("Please upload a valid HTML file.");
-    }
-  };
-
   // Update HTML content when editing
   const handleHtmlChange = (e) => {
-    const iframeDoc = previewRef.current?.contentDocument;
-    if (iframeDoc) {
-      savedScrollTop.current = iframeDoc.documentElement.scrollTop;
-      console.log("savedScrollTop on change (after layout): ", savedScrollTop.current);
+    try {
+      const iframeDoc = previewRef.current?.contentDocument;
+  
+      if (iframeDoc && iframeDoc.documentElement) {
+        savedScrollTop.current = iframeDoc.documentElement.scrollTop;
+        console.log("savedScrollTop on change (after layout):", savedScrollTop.current);
+      } else {
+        console.warn("iframeDoc or iframeDoc.documentElement is not available.");
+      }
+    } catch (error) {
+      console.error("Error accessing iframe scrollTop:", error);
     }
+  
     setHtmlContent(e.target.value);
   };
 
+  // const scrollToCodeByElementId = (elementId) => {
+  //   if (!textareaRef.current) return;
+  
+  //   const tagRegex = new RegExp(`<[^>]*id="${elementId}"[^>]*>`, "i");
+  //   const match = htmlContent.match(tagRegex);
+  
+  //   if (match && match.index !== undefined) {
+  //     const startIdx = match.index;
+  
+  //     // Focus textarea and set selection
+  //     textareaRef.current.focus();
+  //     textareaRef.current.setSelectionRange(startIdx, startIdx + match[0].length);
+  
+  //     // Scroll to make it visible (align to center)
+  //     const beforeText = htmlContent.substring(0, startIdx);
+  //     const lineCountBefore = (beforeText.match(/\n/g) || []).length;
+  
+      
+  //     // Scroll vertically
+  //     const lineHeight = parseInt(getComputedStyle(textareaRef.current).lineHeight) || 20;
+  //     const scrollTop = Math.max((lineCountBefore - 5) * lineHeight, 0);
+  //     textareaRef.current.scrollTop = scrollTop;
+      
+  //     // Scroll horizontally
+  //     const lineStartIdx = htmlContent.lastIndexOf('\n', startIdx) + 1;
+  //     const charOffsetInLine = startIdx - lineStartIdx;
+  //     textareaRef.current.scrollLeft = charOffsetInLine * 8;
+  //     console.log(`Scrolled code to tag with ID: ${elementId}`);
+  //   } else {
+  //     console.warn(`Tag with id="${elementId}" not found in HTML content.`);
+  //   }
+  // };
+  
+  // Handle click on rendered HTML element to highlight corresponding code
+  
   const scrollToCodeByElementId = (elementId) => {
     if (!textareaRef.current) return;
   
-    const tagRegex = new RegExp(`<[^>]*id="${elementId}"[^>]*>`, "i");
-    const match = htmlContent.match(tagRegex);
-  
-    if (match && match.index !== undefined) {
-      const startIdx = match.index;
-  
-      // Focus textarea and set selection
-      textareaRef.current.focus();
-      textareaRef.current.setSelectionRange(startIdx, startIdx + match[0].length);
-  
-      // Scroll to make it visible (align to center)
-      const beforeText = htmlContent.substring(0, startIdx);
-      const lineCountBefore = (beforeText.match(/\n/g) || []).length;
-  
-      const lineHeight = parseInt(getComputedStyle(textareaRef.current).lineHeight) || 20;
-      const scrollTop = Math.max((lineCountBefore - 5) * lineHeight, 0);
-      textareaRef.current.scrollTop = scrollTop;
-  
-      console.log(`Scrolled code to tag with ID: ${elementId}`);
-    } else {
-      console.warn(`Tag with id="${elementId}" not found in HTML content.`);
+    // Match the opening tag with the given ID
+    const tagMatch = htmlContent.match(new RegExp(`<([a-zA-Z0-9]+)[^>]*id=["']${elementId}["'][^>]*>`, "i"));
+    if (!tagMatch || tagMatch.index === undefined) {
+      console.warn(`Tag with id="${elementId}" not found.`);
+      return;
     }
+  
+    const tagName = tagMatch[1];
+    const startIdx = tagMatch.index;
+    const openTag = tagMatch[0];
+    let endIdx;
+  
+    const selfClosingTags = ['img', 'input', 'br', 'hr', 'meta', 'link'];
+    if (selfClosingTags.includes(tagName)) {
+      // Self-closing tag
+      endIdx = startIdx + openTag.length;
+    } else {
+      // Find the closing tag
+      const closingTag = `</${tagName}>`;
+      endIdx = htmlContent.indexOf(closingTag, startIdx);
+      if (endIdx !== -1) {
+        endIdx += closingTag.length;
+      } else {
+        endIdx = startIdx + openTag.length; // fallback to just opening tag
+      }
+    }
+  
+    // Focus and select
+    textareaRef.current.focus();
+    textareaRef.current.setSelectionRange(startIdx, endIdx);
+  
+    // Vertical scroll
+    const textBefore = htmlContent.substring(0, startIdx);
+    const lineCountBefore = (textBefore.match(/\n/g) || []).length;
+    const lineHeight = parseInt(getComputedStyle(textareaRef.current).lineHeight) || 20;
+    const scrollTop = Math.max((lineCountBefore - 5) * lineHeight, 0);
+    textareaRef.current.scrollTop = scrollTop;
+  
+    // Horizontal scroll
+    const lineStartIdx = htmlContent.lastIndexOf('\n', startIdx) + 1;
+    const charOffsetInLine = startIdx - lineStartIdx;
+    const charWidth = 12; // adjust if needed for your font
+    textareaRef.current.scrollLeft = charOffsetInLine * charWidth;
+    console.log(`Scrolled to tag with ID: ${elementId}`);
+    console.log(`Left: ${charOffsetInLine * charWidth}`)
   };
   
-  // Handle click on rendered HTML element to highlight corresponding code
+  
   const handleRenderedClick = (e) => {
     e.stopPropagation();
     
@@ -239,7 +359,6 @@ const Dashboard = () => {
     if (!target.id || !target.id.startsWith(idPrefix)) return;
   
     const computed = window.getComputedStyle(target);
-    
 
     // List all styles
     // const stylesObj = {};
@@ -248,17 +367,31 @@ const Dashboard = () => {
     //   stylesObj[prop] = computed.getPropertyValue(prop);
     // }
 
-
     // Selectively pick only needed styles
+    // console.log("computed: ",computed)
+    const svgAttributes = {};
+
+    if (target.hasAttribute('x')) svgAttributes.x = target.getAttribute('x');
+    if (target.hasAttribute('y')) svgAttributes.y = target.getAttribute('y');
+    if (target.hasAttribute('width')) svgAttributes.width = target.getAttribute('width');
+    if (target.hasAttribute('height')) svgAttributes.height = target.getAttribute('height');
+    if (target.hasAttribute('fill')) svgAttributes.fill = target.getAttribute('fill');
+
     const stylesToShow = {
       color: computed.color,
       fontSize: computed.fontSize,
       backgroundColor: computed.backgroundColor,
       margin: computed.margin,
       padding: computed.padding,
+      fontWeight: computed.fontWeight,
+      opacity: computed.opacity,
+      boxShadow: computed.boxShadow,
+      borderRadius: computed.borderRadius,
       // add more if you want
+      svgAttributes: {
+        ...svgAttributes
+      }
     };
-  
     setSelectedElement(target);      // Save clicked element
     setEditableStyles(stylesToShow); // Save its styles
     setShowStyleEditor(true);         // Show dialog/modal
@@ -274,7 +407,6 @@ const Dashboard = () => {
 
       iframeDocument.documentElement.scrollTop = savedScrollTop.current;
       console.log("Restored scrollTop to in iframe: ", savedScrollTop.current);
-
   };
   
   const applyEditedStyles = () => {
@@ -296,44 +428,167 @@ const Dashboard = () => {
   
   // Handles live style changes 
   const handleEditableStyleChange = (property, value) => {
-    setEditableStyles((prev) => ({
-      ...prev,
-      [property]: value,
-    }));
+    setEditableStyles((prev) => {
+      // If the property is inside svgAttributes
+      if (prev.svgAttributes && property in prev.svgAttributes) {
+        return {
+          ...prev,
+          svgAttributes: {
+            ...prev.svgAttributes,
+            [property]: value,
+          },
+        };
+      }
+  
+      // Otherwise update top-level styles
+      return {
+        ...prev,
+        [property]: value,
+      };
+    });
+  
+    // Also update the actual element
+    if (selectedElement) {
+      const svgAttrs = ['x', 'y', 'width', 'height', 'fill', 'stroke'];
+      if (svgAttrs.includes(property)) {
+        selectedElement.setAttribute(property, value);
+      } else {
+        selectedElement.style[property] = value;
+      }
+    }
   };
   
-  // function ensureHex(color) {
-  //   if (color.startsWith("#")) return color;
+  // #endregion
+  
 
-  //   const result = color.match(/\d+/g);
-  //   if (!result) return "#000000";
-  //   return (
-  //     "#" +
-  //     result
-  //       .map((x) => {
-  //         const hex = parseInt(x).toString(16);
-  //         return hex.length === 1 ? "0" + hex : hex;
-  //       })
-  //       .join("")
-  //   );
-  // }
 
-  // Export clean HTML
-  const handleExport = () => {
-    const cleanedHtml = removeDummyIds(htmlContent);
-    
-    // Create file for download
-    const blob = new Blob([cleanedHtml], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'darwin-export.html';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+
+
+  // #region Markdown
+  // Function Related to Markdown Files
+
+  // Update Markdown content when editing
+  const handleMarkDownChange = (e) => {
+    const iframeDoc = markdownPreviewRef.current?.contentDocument;
+    if (iframeDoc) {
+      savedScrollTop.current = iframeDoc.documentElement.scrollTop;
+      console.log("savedScrollTop on change (after layout): ", savedScrollTop.current);
+    }
+    console.log('setting changes')
+    restoreScrollPending.current = true;
+    setMarkdownContent(e.target.value);
   };
 
+  const handleMarkdownPreviewLoad = () => {
+    if (!restoreScrollPending.current) return; // only restore if content just changed
+    const iframeDoc = markdownPreviewRef.current?.contentDocument;
+    if (!iframeDoc) return;
+  
+    requestAnimationFrame(() => {
+      iframeDoc.documentElement.scrollTop = savedScrollTop.current || 0;
+      console.log("Restored scrollTop after markdown content change:", savedScrollTop.current);
+  
+      restoreScrollPending.current = false; // reset
+    });
+  };
+  
+  // Debounced scroll handler
+  const handleScrollSync = useCallback((source) => {
+    if (isSyncingScroll.current) return; // Prevent loops
+    if (fileType !== 'markdown') return;
+    
+    const editor = markdownTextareaRef.current;
+    const previewIframe = markdownPreviewRef.current;
+    const previewDoc = previewIframe?.contentWindow?.document.documentElement;
+    
+    if (!editor || !previewDoc) return;
+    
+    isSyncingScroll.current = true; // Set flag
+    
+    let scrollPercent = 0;
+    if (source === 'editor') {
+      // Ensure denominator is not zero
+      const editorScrollableHeight = editor.scrollHeight - editor.clientHeight;
+      if (editorScrollableHeight > 0) {
+        scrollPercent = editor.scrollTop / editorScrollableHeight;
+        previewDoc.scrollTop = scrollPercent * (previewDoc.scrollHeight - previewDoc.clientHeight);
+      }
+    } else if (source === 'preview') {
+      // Ensure denominator is not zero
+      const previewScrollableHeight = previewDoc.scrollHeight - previewDoc.clientHeight;
+      if (previewScrollableHeight > 0) {
+        scrollPercent = previewDoc.scrollTop / previewScrollableHeight;
+        editor.scrollTop = scrollPercent * (editor.scrollHeight - editor.clientHeight);
+      }
+    }
+    
+    // Reset the flag after a short delay
+    clearTimeout(syncTimeoutRef.current);
+    syncTimeoutRef.current = setTimeout(() => {
+      isSyncingScroll.current = false;
+    }, 100); // Adjust delay as needed
+    
+  }, [fileType]);
+  
+  // useEffect(()=>{
+  //   console.log('restore the scrol top')
+  //   const previewIframe = markdownPreviewRef.current?.contentDocument;
+  //   if(!previewIframe) return
+  //   if(!savedScrollTop || !savedScrollTop.current) return
+  //   setTimeout(()=>{
+  //     console.log("previewIframe.scrollTop: ",previewIframe.documentElement.scrollTop)
+  //     console.log("avedScrollTop.current: ",savedScrollTop.current)
+  //     previewIframe.documentElement.scrollTop = savedScrollTop.current;
+  //     console.log("Restored scrollTop to in iframe: ", previewIframe.documentElement.scrollTop);
+  //   },200)
+  // },[markdownContent])
+
+  // Effect to add scroll listeners for Markdown
+  useEffect(() => {
+    if (fileType !== 'markdown') return;
+    console.log("inside")
+    const editor = markdownTextareaRef.current;
+    const previewIframe = markdownPreviewRef.current;
+    let previewWindow = null;
+    
+    const handleEditorScroll = () => handleScrollSync('editor');
+    const handlePreviewScroll = () => handleScrollSync('preview');
+    
+    const setupPreviewListener = () => {
+      previewWindow = previewIframe?.contentWindow;
+      if (previewWindow) {
+        previewWindow.addEventListener('scroll', handlePreviewScroll);
+      } else {
+        // Retry if iframe contentWindow isn't available immediately
+        setTimeout(setupPreviewListener, 100);
+      }
+    }
+    
+    
+    if (editor) {
+      editor.addEventListener('scroll', handleEditorScroll);
+    }
+    if (previewIframe) {
+      // Use onLoad for the iframe to ensure contentWindow is ready
+      previewIframe.onload = setupPreviewListener;
+      // Initial setup attempt in case it's already loaded
+      setupPreviewListener();
+    }
+    
+    // Cleanup function
+    return () => {
+      if (editor) {
+        editor.removeEventListener('scroll', handleEditorScroll);
+      }
+      if (previewWindow) {
+        previewWindow.removeEventListener('scroll', handlePreviewScroll);
+      }
+      clearTimeout(syncTimeoutRef.current); // Clear timeout on cleanup
+    };
+  }, [fileType, handleScrollSync]); // Rerun if fileType or handler changes
+  
+  // #endregion
+  
   if (loading) {
     return (
       <div className="min-h-screen bg-dark-950 flex items-center justify-center">
@@ -344,9 +599,8 @@ const Dashboard = () => {
       </div>
     );
   }
-
   return (
-    <div className="min-h-screen flex flex-col bg-dark-950">
+    <div className="min-h-screen flex flex-col bg-dark-950 overflow-clip">
       {/* Top Navigation */}
       <nav className="bg-dark-900 border-b border-dark-800 shadow-md">
         <div className="px-4 py-3 flex justify-between items-center">
@@ -359,8 +613,8 @@ const Dashboard = () => {
               onClick={handleExport}
               className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-600 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={!fileLoaded}
-            >
-              Export HTML
+              >
+              {fileType==="html" ? "Export Html" : "Export Markdown"}
             </button>
             <button 
               onClick={handleLogout}
@@ -380,7 +634,7 @@ const Dashboard = () => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
             </svg>
             Upload HTML File
-            <input type="file" accept=".html" onChange={handleFileUpload} className="hidden" />
+            <input type="file" accept=".html,.md" onChange={handleFileUpload} className="hidden" />
           </label>
           <div className={`text-sm ${fileLoaded ? 'text-green-500' : 'text-gray-400'}`}>
             {fileLoaded ? "File loaded. Use the editor below to make changes." : "No file loaded. Upload an HTML file to begin editing."}
@@ -420,17 +674,25 @@ const Dashboard = () => {
                 )}
               </button>
             </div>
-            <div className="flex-1 overflow-auto">
-              {!leftPanelCollapsed && (
+            <div className="flex-1 overflow-y-hidden"> {/* Ensure this container allows scrolling */}
+              {!leftPanelCollapsed && fileType === "markdown" ? (
                 <textarea
-                  ref={textareaRef}
+                  ref={markdownTextareaRef} // Assign ref here
+                  value={markdownContent}
+                  onChange={(e) => handleMarkDownChange(e)}
+                  className="w-full h-full p-4 bg-dark-950 text-gray-200 font-mono focus:outline-none resize-none code-editor text-nowrap text-sm"
+                  spellCheck="false"
+                />
+              ) : !leftPanelCollapsed && fileType === "html" ? ( // Handle HTML case
+                <textarea
+                  ref={textareaRef} // Keep original ref for HTML
                   value={htmlContent}
                   onChange={handleHtmlChange}
                   className="w-full h-full p-4 bg-dark-950 text-gray-200 font-mono focus:outline-none resize-none code-editor text-nowrap"
-                  placeholder="HTML code will appear here after uploading a file..."
+                  placeholder="HTML code will appear here..."
                   spellCheck="false"
                 />
-              )}
+              ) : null /* Handle collapsed or no file */}
             </div>
           </div>
 
@@ -462,247 +724,37 @@ const Dashboard = () => {
                 )}
               </button>
             </div>
-            <div className="flex-1 overflow-auto bg-dark-950">
-              {!rightPanelCollapsed && (
+
+            <div className="flex-1 overflow-hidden bg-white">
+              {!rightPanelCollapsed && fileType === "markdown" ? (
+                <iframe
+                  ref={markdownPreviewRef} 
+                  className="w-full h-full border-none "
+                  srcDoc={marked.parse(debouncedMarkdownContent)}
+                  title="Markdown Preview"
+                  sandbox="allow-scripts allow-same-origin"
+                  onLoad={handleMarkdownPreviewLoad}
+                />
+              ): !rightPanelCollapsed && fileType === "html" ? (
                 <iframe
                   ref={previewRef}
                   className="w-full h-full border-none"
                   srcDoc={debouncedHtmlContent}
                   title="HTML Preview"
-                  // sandbox="allow-same-origin"
                   sandbox="allow-scripts allow-same-origin"
                   onLoad={handleIframeLoad}
                 />
-              )}
+              ) : null /* Handle collapsed or no file */}
             </div>
 
             {/* Right Click Context Menu */}
-            {showStyleEditor && (
-              <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
-                <div className="bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-6 rounded-2xl shadow-2xl w-[400px] max-w-[90vw] animate-in zoom-in-95 duration-150">
-                  <div className="flex items-center justify-between mb-6">
-                    <h2 className="text-2xl font-bold">Style Editor</h2>
-                    <button 
-                      onClick={() => setShowStyleEditor(false)}
-                      className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>
-                      </svg>
-                    </button>
-                  </div>
-
-                  <div className="space-y-6 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
-                    {/* Typography Group */}
-                    <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
-                      <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">Typography</h3>
-                      
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium block">Font Size</label>
-                          <select
-                            value={editableStyles.fontSize}
-                            onChange={(e) => handleEditableStyleChange('fontSize', e.target.value)}
-                            className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                          >
-                            <option value="12px">12px</option>
-                            <option value="14px">14px</option>
-                            <option value="16px">16px</option>
-                            <option value="18px">18px</option>
-                            <option value="20px">20px</option>
-                            <option value="24px">24px</option>
-                            <option value="32px">32px</option>
-                          </select>
-                        </div>
-                        
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium block">Font Weight</label>
-                          <select
-                            value={editableStyles.fontWeight}
-                            onChange={(e) => handleEditableStyleChange('fontWeight', e.target.value)}
-                            className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                          >
-                            <option value="normal">Normal</option>
-                            <option value="bold">Bold</option>
-                            <option value="lighter">Lighter</option>
-                            <option value="bolder">Bolder</option>
-                            <option value="100">100</option>
-                            <option value="400">400</option>
-                            <option value="700">700</option>
-                            <option value="900">900</option>
-                          </select>
-                        </div>
-                      </div>
-                      
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium block">Text Align</label>
-                        <div className="flex bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg overflow-hidden">
-                          {['left', 'center', 'right', 'justify'].map((align) => (
-                            <button
-                              key={align}
-                              onClick={() => handleEditableStyleChange('textAlign', align)}
-                              className={`flex-1 py-2 px-3 text-sm capitalize transition-colors ${
-                                editableStyles.textAlign === align 
-                                  ? 'bg-blue-500 text-white' 
-                                  : 'hover:bg-gray-100 dark:hover:bg-gray-600'
-                              }`}
-                            >
-                              {align}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                    
-                    {/* Colors Group */}
-                    <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
-                      <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">Colors</h3>
-                      
-                      <div className="grid grid-cols-1 gap-4">
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium block">Text Color</label>
-                          <div className="flex items-center space-x-2">
-                            <div 
-                              className="w-8 h-8 rounded-md border border-gray-200 dark:border-gray-600" 
-                              style={{ backgroundColor: editableStyles.color }}
-                            ></div>
-                            {/* <input
-                              type="color"
-                              value={ensureHex(editableStyles.color)}
-                              onChange={(e) => handleEditableStyleChange('color', e.target.value)}
-                              className="w-full h-9 cursor-pointer rounded-md border border-gray-200 dark:border-gray-600"
-                            /> */}
-                            <SketchPicker
-                              color={editableStyles.color}
-                              onChange={(color) => handleEditableStyleChange('color', color.hex || `rgba(${color.rgb.r}, ${color.rgb.g}, ${color.rgb.b}, ${color.rgb.a})`)}
-                              
-                            />
-                          </div>
-                        </div>
-                        
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium block">Background</label>
-                          <div className="flex items-center space-x-2">
-                            <div 
-                              className="w-8 h-8 rounded-md border border-gray-200 dark:border-gray-600" 
-                              style={{ backgroundColor: editableStyles.backgroundColor }}
-                            ></div>
-                            {/* <input
-                              type="color"
-                              value={ensureHex(editableStyles.backgroundColor)}
-                              onChange={(e) => handleEditableStyleChange('backgroundColor', e.target.value)}
-                              className="w-full h-9 cursor-pointer rounded-md border border-gray-200 dark:border-gray-600"
-                            /> */}
-                            <SketchPicker
-                              color={editableStyles.backgroundColor}
-                              onChange={(color) => handleEditableStyleChange('backgroundColor', color.hex || `rgba(${color.rgb.r}, ${color.rgb.g}, ${color.rgb.b}, ${color.rgb.a})`)}
-                              
-                            />
-                          </div>
-                        </div>
-                      </div>
-                      
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium block">Opacity</label>
-                        <div className="flex items-center space-x-3">
-                          <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.1"
-                            value={editableStyles.opacity}
-                            onChange={(e) => handleEditableStyleChange('opacity', e.target.value)}
-                            className="w-full h-2 bg-gray-200 dark:bg-gray-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                          />
-                          <span className="text-sm w-8 text-center">{editableStyles.opacity}</span>
-                        </div>
-                      </div>
-                    </div>
-                    
-                    {/* Spacing & Layout Group */}
-                    <div className="space-y-4 p-4 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
-                      <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">Spacing & Layout</h3>
-                      
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium block">Margin</label>
-                          <select
-                            value={editableStyles.margin}
-                            onChange={(e) => handleEditableStyleChange('margin', e.target.value)}
-                            className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                          >
-                            <option value="0px">0px</option>
-                            <option value="4px">4px</option>
-                            <option value="8px">8px</option>
-                            <option value="12px">12px</option>
-                            <option value="16px">16px</option>
-                            <option value="24px">24px</option>
-                            <option value="32px">32px</option>
-                          </select>
-                        </div>
-                        
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium block">Padding</label>
-                          <select
-                            value={editableStyles.padding}
-                            onChange={(e) => handleEditableStyleChange('padding', e.target.value)}
-                            className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                          >
-                            <option value="0px">0px</option>
-                            <option value="4px">4px</option>
-                            <option value="8px">8px</option>
-                            <option value="12px">12px</option>
-                            <option value="16px">16px</option>
-                            <option value="24px">24px</option>
-                            <option value="32px">32px</option>
-                          </select>
-                        </div>
-                      </div>
-                      
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium block">Border Radius</label>
-                        <input
-                          type="text"
-                          value={editableStyles.borderRadius}
-                          onChange={(e) => handleEditableStyleChange('borderRadius', e.target.value)}
-                          className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                        />
-                      </div>
-                      
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium block">Box Shadow</label>
-                        <select
-                          value={editableStyles.boxShadow}
-                          onChange={(e) => handleEditableStyleChange('boxShadow', e.target.value)}
-                          className="w-full bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                        >
-                          <option value="none">None</option>
-                          <option value="0 1px 3px rgba(0,0,0,0.1)">Small</option>
-                          <option value="0 4px 6px rgba(0,0,0,0.1)">Medium</option>
-                          <option value="0 10px 15px rgba(0,0,0,0.1)">Large</option>
-                          <option value="0 20px 25px rgba(0,0,0,0.1)">Extra Large</option>
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-end space-x-3 mt-6">
-                    <button
-                      onClick={() => setShowStyleEditor(false)}
-                      className="px-5 py-2.5 rounded-lg font-medium border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={applyEditedStyles}
-                      className="px-5 py-2.5 rounded-lg font-medium bg-blue-500 hover:bg-blue-600 text-white transition-colors"
-                    >
-                      Apply Changes
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
+            {showStyleEditor && <RightClickMenu
+              showStyleEditor={showStyleEditor}
+              handleEditableStyleChange={handleEditableStyleChange}
+              editableStyles={editableStyles}
+              setShowStyleEditor={setShowStyleEditor}
+              applyEditedStyles={applyEditedStyles}
+            />}
           </div>
         </div>
       </div>
