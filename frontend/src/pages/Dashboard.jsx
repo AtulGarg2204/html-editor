@@ -33,7 +33,7 @@ const Dashboard = () => {
   const navigate = useNavigate();
   const idPrefix = "darwin-id-";
   const savedScrollTop = useRef(0);
-
+  
   // Tags that need unique IDs for selection
   const tagsNeedingId = [
     'div', 'span', 'p', 'a', 'button', 'input', 'label', 'text', 'rect', 'line',
