@@ -36,3 +36,94 @@
     transform: rotate(360deg);
   }
 }
+
+
+/* Add this CSS to your project's stylesheet */
+
+/* Element highlight styles */
+.darwin-element-highlight {
+  outline: 2px dashed #3B82F6 !important;
+  outline-offset: 1px !important;
+  position: relative;
+}
+
+/* Button styles for editor */
+.editor-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem;
+  border-radius: 0.375rem;
+  transition: all 150ms ease;
+}
+
+.editor-button:hover {
+  background-color: rgba(59, 130, 246, 0.1);
+}
+
+.editor-button.active {
+  background-color: rgba(59, 130, 246, 0.2);
+  color: #3B82F6;
+}
+
+/* Color picker styles */
+.color-swatch {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  border: 1px solid #e5e7eb;
+  cursor: pointer;
+  transition: transform 150ms ease;
+}
+
+.color-swatch:hover {
+  transform: scale(1.1);
+}
+
+.color-swatch.selected {
+  box-shadow: 0 0 0 2px #3B82F6;
+}
+
+/* Custom scrollbar for the editor */
+.code-editor::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.code-editor::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.code-editor::-webkit-scrollbar-thumb {
+  background-color: rgba(156, 163, 175, 0.5);
+  border-radius: 4px;
+}
+
+.code-editor::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(156, 163, 175, 0.7);
+}
+
+/* Dialog animation */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.editor-dialog {
+  animation: fadeIn 0.2s ease-out;
+}
+
+.editor-dialog-content {
+  animation: scaleIn 0.15s ease-out;
+}
+
+/* Transparent color swatch pattern */
+.transparent-swatch {
+  background-image: linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 50%, #ccc 50%, #ccc 75%, transparent 75%, transparent);
+  background-size: 8px 8px;
+}
